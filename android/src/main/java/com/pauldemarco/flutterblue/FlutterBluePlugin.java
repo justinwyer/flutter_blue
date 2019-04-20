@@ -102,7 +102,7 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
     }
 
     @Override
-    public void onMethodCall(MethodCall call, Result result) {
+    public void onMethodCall(MethodCall call, final Result result) {
         if(mBluetoothAdapter == null && !"isAvailable".equals(call.method)) {
             result.error("bluetooth_unavailable", "the device does not have bluetooth", null);
             return;
@@ -185,15 +185,15 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
             case "connect":
             {
                 byte[] data = call.arguments();
-                Protos.ConnectRequest options;
+                final Protos.ConnectRequest options;
                 try {
                     options = Protos.ConnectRequest.newBuilder().mergeFrom(data).build();
                 } catch (InvalidProtocolBufferException e) {
                     result.error("RuntimeException", e.getMessage(), e);
                     break;
                 }
-                String deviceId = options.getRemoteId();
-                BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(deviceId);
+                final String deviceId = options.getRemoteId();
+                final BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(deviceId);
                 boolean isConnected = mBluetoothManager.getConnectedDevices(BluetoothProfile.GATT).contains(device);
 
                 // If device is already connected, return error
@@ -210,10 +210,33 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
                     }
                 }
 
-                // New request, connect and add gattServer to Map
-                BluetoothGatt gattServer = device.connectGatt(registrar.activity(), options.getAndroidAutoConnect(), mGattCallback);
-                mGattServers.put(deviceId, gattServer);
-                result.success(null);
+
+                registrar.context().registerReceiver(new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        int bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1);
+                        if (bondState == BluetoothDevice.BOND_BONDED) {
+                            BluetoothGatt gattServer = device.connectGatt(registrar.activity(), options.getAndroidAutoConnect(), mGattCallback);
+                            mGattServers.put(deviceId, gattServer);
+                            result.success(null);
+                            context.unregisterReceiver(this);
+                        } else if (bondState == BluetoothDevice.BOND_NONE) {
+                            result.error("connect_error", "unable to bond with device", null);
+                            context.unregisterReceiver(this);
+                        }
+                    }
+                }, new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED));
+
+                boolean bondResult = device.createBond();
+                log(LogLevel.DEBUG, "attempting to bond with device");
+                if (!bondResult && device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                    log(LogLevel.DEBUG, "already bonded with device " + deviceId);
+
+                    // New request, connect and add gattServer to Map
+                    BluetoothGatt gattServer = device.connectGatt(registrar.activity(), options.getAndroidAutoConnect(), mGattCallback);
+                    mGattServers.put(deviceId, gattServer);
+                    result.success(null);
+                }
                 break;
             }
 
